@@ -1,0 +1,117 @@
+### This is the code for batch CCI detection  ###
+import os
+import numpy as np
+import pandas as pd
+from scipy.ndimage import binary_dilation
+import tifffile
+from concurrent.futures import ProcessPoolExecutor
+import cv2
+import pandas as pd
+import openpyxl
+import anndata as ad
+import glob
+
+# Define the base paths and their corresponding sample IDs and ends
+bases = {
+    1: {'path': './S2/CellStatsDir/',
+        'csv_filename': 'S2_Cell_Stats_F{fov_str}.csv',
+        'end': 274}, 
+    2: {'path': './S3/CellStatsDir/',
+        'csv_filename': 'S3_Cell_Stats_F{fov_str}.csv',
+        'end': 390} 
+}
+
+def process_fov(sample_id, fov_str, base_path, csv_filename_template, output_dir):
+    csv_filename = csv_filename_template.format(fov_str=fov_str)
+    csv_path = os.path.join(base_path, f"FOV{fov_str}", csv_filename)
+    image_path = os.path.join(base_path, "CellOverlay", f"CellOverlay_F{fov_str}.jpg")
+    mask_path = os.path.join(base_path, f"FOV{fov_str}", f"CellLabels_F{fov_str}.tif")
+
+    print(f"Processing FOV{fov_str} for Sample ID {sample_id}")
+
+    if not os.path.exists(csv_path) or not os.path.exists(image_path) or not os.path.exists(mask_path):
+        print(f"Required files not found for FOV{fov_str}.")
+        return
+
+    df = pd.read_csv(csv_path)
+    image = cv2.imread(image_path)
+    mask = tifffile.imread(mask_path)
+
+    if image is None or mask is None:
+        print(f"Unable to load image or mask for FOV{fov_str}.")
+        return
+
+    interacting_cells = find_interacting_cells(mask)
+    print(f"Interacting cells for FOV{fov_str}: {interacting_cells}")
+
+    # Save the interacting cells results to a CSV file
+    results_path = os.path.join(output_dir, f"Multiple_InteractingCells_S{sample_id}_FOV{fov_str}.csv")
+    interacting_cells_list = []
+    for cell_id, ids in interacting_cells.items():
+        for id_ in ids:
+            interacting_cells_list.append((cell_id, id_))
+
+    df_interacting_cells = pd.DataFrame(interacting_cells_list, columns=['CellID', 'InteractingCellID'])
+    df_interacting_cells.to_csv(results_path, sep='\t', index=False)
+    print(f"Results saved to {results_path}")
+
+def find_interacting_cells(masks, structure=np.ones((3,3), dtype=np.int8)):
+    dilated_masks = np.zeros_like(masks)
+    cell_ids = np.unique(masks)[1:]  # Skip the background label 0
+    interactions = {}
+
+    for cell_id in cell_ids:
+        dilated_cell = binary_dilation(masks == cell_id, structure=structure)
+        interacting_ids = np.unique(masks[dilated_cell & (masks != cell_id)])
+        interacting_ids = [id_ for id_ in interacting_ids if id_ != 0]  # Skip the background label 0
+        if interacting_ids:
+            interactions[cell_id] = interacting_ids
+
+    return interactions
+
+# Process each FOV in parallel
+with ProcessPoolExecutor() as executor:
+    futures = []
+    for sample_id, info in bases.items():
+        base_path = info['path']
+        csv_filename_template = info['csv_filename']
+        fov_end = info['end']
+        for fov_num in range(1, fov_end + 1):
+            fov_str = f"{fov_num:03d}"
+            futures.append(executor.submit(process_fov, sample_id, fov_str, base_path, csv_filename_template, output_dir))
+
+    for future in futures:
+        future.result()  # Get the result of the future if needed
+
+###  Merge FOV results   ###
+csv_files = glob.glob(os.path.join(input_dir, 'Multiple_InteractingCells_S*_FOV*.csv'))
+
+dfs = []
+
+for file_path in csv_files:
+    df = pd.read_csv(file_path, sep = '\t')
+    file_name = os.path.basename(file_path)
+    sample_id = file_name.split('_S')[1].split('_FOV')[0]
+    fov_str = file_name.split('_FOV')[1].split('.')[0]
+    df['sample_id'] = sample_id
+    df['FOV'] = fov_str
+    df['CellID'] = 's' + sample_id + '_c_' + sample_id + '_FOV' + fov_str + '_' + df['CellID'].astype(str)
+    df['InteractingCellID'] = 's' + sample_id + '_c_' + sample_id + '_FOV' + fov_str + '_' + df['InteractingCellID'].astype(str)
+    dfs.append(df)
+dfs_sorted = sorted(dfs, key=lambda x: (x['sample_id'].iloc[0], x['FOV'].iloc[0]))
+df_combined = pd.concat(dfs_sorted, ignore_index=True)
+df_combined.to_csv(os.path.join(input_dir, output_file), index=False)
+print(f"Merged file saved to {output_file}")
+
+CCI_df = CCI_df.dropna(subset=['CellID_Final_cell_type', 'InteractingCellID_Final_cell_type', 'sample_fov'])
+
+### CCI region spericif interaction selection ###
+region_select_df = pd.read_excel(region_select_path)
+cci_df_path = './SMIdata/CellPoseTest/CCIResultOutput/CCI_df_removeNA.csv'
+cci_df = pd.read_csv(cci_df_path, sep=',')
+t_region_sample_fov = region_select_df[region_select_df['Region_type'] == 'T_region']['sample_fov'].tolist()
+t_region_cci_df = cci_df[cci_df['sample_fov'].isin(t_region_sample_fov)]
+
+t_region_output_path = './SMIdata/CellPoseTest/CCIResultOutput/T_region_CCI_df.csv'
+t_region_cci_df.to_csv(t_region_output_path, index=False)
+print(f"T_region CCI_df saved to {t_region_output_path}")

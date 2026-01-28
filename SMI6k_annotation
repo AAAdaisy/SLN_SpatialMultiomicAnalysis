@@ -1,0 +1,134 @@
+import os 
+#os.getcwd()
+from pathlib import Path
+import numpy as np
+import matplotlib.pyplot as plt
+import matplotlib.patches as patches
+import seaborn as sns
+import scanpy as sc
+import squidpy as sq
+import pandas as pd
+sc.logging.print_header()
+#scanpy==1.10.3 anndata==0.10.8 umap==0.5.9.post2 numpy==1.24.4 scipy==1.13.1 pandas==2.3.3 scikit-learn==1.6.1 statsmodels==0.14.5 igraph==0.11.9 pynndescent==0.5.13
+
+adata = sc.read_h5ad("./SLN_SMI6k_data.h5ad")
+sc.pp.normalize_total(adata, target_sum=1e4)
+sc.pp.log1p(adata)
+plt = sc.pp.highly_variable_genes(adata, min_mean=0.0125, max_mean=3, min_disp=0.5)
+
+sc.external.pp.bbknn(adata, batch_key='sample')
+sc.pl.umap(adata, color=['sample', 'leiden_0.5'],show = False)
+
+df=pd.DataFrame(
+    {group + '_' + key[:1]:result[key][group]
+    for group in groups for key in ['names', 'pvals']}).head(25)
+
+cluster2annotation = {
+    "0": "T",
+    "1": "B",
+    "2": "Mye",
+    "3": "Fib",
+    "4": "Endo",
+    "5": "Mye",
+    "6": "NK",
+    "7": "cDC3",
+    "8": "Plasma",
+    "9": "pDC",
+    "10":"Mye",# CD14_mono
+    "11":"Mast"
+}
+
+adata.obs["cell_type_layer1"] = adata.obs["leiden_0.5"].map(cluster2annotation).astype("category")
+
+os.makedirs("./Plot", exist_ok=True)
+
+sc.pl.umap(
+    adata,
+    s=0.3,
+    color="cell_type_layer1",
+    size=15,
+    frameon=False,
+    legend_loc="on data",
+    legend_fontsize=12,
+    legend_fontoutline=1.5,
+    title="",
+    show=False  
+)
+
+gene_sets = {
+    'T': ['CD3D', 'CD3E', 'CD4', 'CD8A', 'CD8B'],
+    'B': ['CD79B', 'CD79A', 'MS4A1', 'CD19', 'CXCL13'],
+    'Fib': ['COL1A1', 'COL6A1', 'VIM', 'VCAM1', 'DCN'],
+    'Mye': ['APOE', 'C1QC', 'C1QA', 'APOC1', 'CD68'],
+    'cDC3': ['LAMP3', 'CCR7', 'CCL19', 'CD40', 'KDM2B'],
+    'Endo': ['VWF', 'CD34', 'PLVAP', 'PECAM1', 'LYVE1'],
+    'NK': ['NKG7', 'GZMK', 'GNLY', 'KLRK1', 'NCAM1'],
+    'Plasma': ['IGHG1/2', 'IGLL5', 'JCHAIN', 'MZB1', 'SDC1'],
+    'pDC': ['CLEC4C', 'LILRA4', 'IL3RA', 'JCHAIN', 'SPIB'],
+    'Mast': ['TPSAB1/2', 'CPA3', 'KIT']
+}
+
+for cell_type, markers in gene_sets.items():
+
+    valid_markers = [gene for gene in markers if gene in adata.var_names]
+    if len(valid_markers) > 0:
+        sc.tl.score_genes(adata, valid_markers, score_name=f'{cell_type}_score')
+        print(f"Calculated {cell_type} score using markers: {valid_markers}")
+    else:
+        print(f"Warning: No valid markers found for {cell_type}")
+
+score_columns = [f'{cell_type}_score' for cell_type in gene_sets.keys() if f'{cell_type}_score' in adata.obs.columns]
+
+sc.pl.umap(
+    adata, 
+    color=score_columns,
+    ncols=4,  
+    cmap='RdBu_r', 
+    vcenter=0,  #
+    show=False,
+    s=5,  
+    frameon=False
+)
+
+plt.suptitle('Cell Type Marker Scores', y=1.02, fontsize=16)
+plt.tight_layout()
+
+output_dir = "./Plot/"
+os.makedirs(output_dir, exist_ok=True)
+
+plt.savefig(
+    f"{output_dir}adata.umap_celltype_scores.png", 
+    dpi=300, 
+    bbox_inches='tight'
+)
+plt.savefig(
+    f"{output_dir}adata.umap_celltype_scores.pdf", 
+    bbox_inches='tight'
+)
+
+
+sc.pl.dotplot(
+    adata,
+    marker_genes_dict,
+    groupby='cell_type_layer1',
+    use_raw=True,
+    dendrogram=False,
+    cmap='Spectral_r',
+    swap_axes=False,
+    show=False  
+)
+adata_T = raw_adata[raw_adata.obs['cell_type_layer1']=='T'].copy()
+adata_NK = raw_adata[raw_adata.obs['cell_type_layer1']=='NK'].copy()
+adata_B = raw_adata[raw_adata.obs['cell_type_layer1']=='B'].copy()
+adata_Mye = raw_adata[raw_adata.obs['cell_type_layer1']=='Mye'].copy()
+adata_Plasma = raw_adata[raw_adata.obs['cell_type_layer1']=='Plasma'].copy()
+adata_cDC3 = raw_adata[raw_adata.obs['cell_type_layer1']=='pDC'].copy()
+adata_pDC = raw_adata[raw_adata.obs['cell_type_layer1']=='cDC3'].copy()
+adata_Endo = raw_adata[raw_adata.obs['cell_type_layer1']=='Endo'].copy()
+adata_Fib = raw_adata[raw_adata.obs['cell_type_layer1']=='Fib'].copy()
+adata_Mast = raw_adata[raw_adata.obs['cell_type_layer1']=='Mast'].copy()
+
+adata_Mye_merged = sc.AnnData.concatenate(adata_Mye, adata_pDC,adata_cDC3)
+adata_B_merged = sc.AnnData.concatenate(adata_B, adata_Plasma)
+adata_T_merged = sc.AnnData.concatenate(adata_T, adata_NK)
+
